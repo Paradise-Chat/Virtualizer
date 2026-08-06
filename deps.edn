@@ -5,6 +5,6 @@
         org.clj-commons/hickory {:mvn/version "0.7.7"}
         com.taoensso/timbre {:mvn/version "6.8.0"}
         reagent/reagent {:mvn/version "2.0.1"}
-        jtk-dvlp/cljs-workers {:git/url "https://github.com/Paradise-in-Matrix/cljs-workers.git"
+        jtk-dvlp/cljs-workers {:git/url "https://github.com/Paradise-Chat/cljs-workers.git"
                                :git/sha "9d52ca9097702ae640836b9b299a5720f312868a"}
         }}
