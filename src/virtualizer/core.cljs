@@ -11,20 +11,50 @@
 (defonce !scroll-timer (atom nil))
 
 (defn VirtualItemWrapper [^js props]
-  (let [item        (.-item props)
-        render-item (.-renderItem props)]
-    (render-item item)))
+  (let [id              (.-id props)
+        item            (.-item props)
+        layout-height   (.-layoutHeight props)
+        jump-target-id  (.-jumpTargetId props)
+        render-item     (.-renderItem props)
+        item-resize-obs (.-itemResizeObs props)
+        el-ref          (react/useRef nil)]
+
+    (react/useLayoutEffect
+     (fn []
+       (let [el (.-current el-ref)]
+         (when el (metrics/observe! item-resize-obs el))
+         (fn [] (when el (metrics/unobserve! item-resize-obs el)))))
+     #js [id item-resize-obs])
+
+    (react/createElement "div"
+                         #js {"data-item-id" id
+                              "data-layout-height" layout-height
+                              "ref" el-ref
+                              "className" (if (= id jump-target-id) "is-jump-target" "")
+                              "style" #js {"width" "100%"
+                                           "flexShrink" 0
+                         ;;                  "height" (str layout-height "px")
+                         ;;                  "overflow" "hidden"
+
+                                           }}
+                         (render-item item))
+    ))
 
 (def MemoVirtualItemWrapper
   (react/memo VirtualItemWrapper
               (fn [^js prev ^js next]
-                (identical? (.-item prev) (.-item next)))))
+                (and (identical? (.-item prev) (.-item next))
+                     (= (.-layoutHeight prev) (.-layoutHeight next))))))
+
+
 
 (defn VirtualItemsRenderer [^js props]
   (let [visible-window  (.-visibleWindow props)
         items-map       (.-itemsMap props)
         total-height    (.-totalHeight props)
+        jump-target-id  (.-jumpTargetId props)
         render-item     (.-renderItem props)
+        item-resize-obs (.-itemResizeObs props)
         first-vis       (first visible-window)
         last-vis        (last visible-window)
         bottom-gap      (if first-vis (:bottom first-vis) total-height)
@@ -33,12 +63,16 @@
 
     (.push children (react/createElement "div" #js {"key" "bottom-gap" "style" #js {"height" (str bottom-gap "px") "flexShrink" 0 "width" "100%"}}))
 
-    (doseq [{:keys [id] :as layout-item} visible-window]
+    (doseq [{:keys [id height] :as layout-item} visible-window]
       (let [real-item (or (get items-map id) layout-item)]
         (.push children (react/createElement MemoVirtualItemWrapper
                                              #js {"key" (str id)
+                                                  "id" id
                                                   "item" real-item
-                                                  "renderItem" render-item}))))
+                                                  "layoutHeight" height
+                                                  "jumpTargetId" jump-target-id
+                                                  "renderItem" render-item
+                                                  "itemResizeObs" item-resize-obs}))))
 
     (.push children (react/createElement "div" #js {"key" "top-gap" "style" #js {"height" (str top-gap "px") "overflowAnchor" "none" "flexShrink" 0 "width" "100%"}}))
 
@@ -48,6 +82,7 @@
   (react/memo VirtualItemsRenderer
               (fn [^js prev ^js next]
                 (and (= (.-totalHeight prev) (.-totalHeight next))
+                     (= (.-jumpTargetId prev) (.-jumpTargetId next))
                      (identical? (.-visibleWindow prev) (.-visibleWindow next))
                      (identical? (.-itemsMap prev) (.-itemsMap next))))))
 
@@ -73,7 +108,8 @@
         item-resize-obs      (metrics/create-item-observer !latest-items !measured)
         container-obs        (metrics/create-container-observer !container-width (:!client-height scroll-state))
 
-        container-ref-fn     (fn [el]
+         container-ref-fn
+         (fn [el]
                                (let [old-el @!scroll-ref]
                                  (when (not= old-el el)
                                    (when old-el (metrics/unobserve! container-obs old-el))
@@ -115,14 +151,6 @@
       (fn [this old-argv old-state]
         (when-let [el @!scroll-ref]
           {:scroll-top (.-scrollTop el)}))
-
-      :should-component-update
-      (fn [this [_ old-props] [_ new-props]]
-        (or (not (identical? (:items old-props) (:items new-props)))
-            (not= (:jump-target-id old-props) (:jump-target-id new-props))
-            (not= (:loading-older? old-props) (:loading-older? new-props))
-            (not= (:loading-newer? old-props) (:loading-newer? new-props))
-            (not= (:focus-mode? old-props) (:focus-mode? new-props))))
 
       :component-did-update
       (fn [this old-argv old-state snapshot]
@@ -166,13 +194,16 @@
             (when (:chunking? layout)
               (put! chunk-ch true))
 
+            (js/console.log (str "[DEBUG: Layout Update] Next Layout processed."
+                                 " | Total Height: " (:th layout)
+                                 " | Anchor Valid? " (some? @(:!anchor scroll-state))))
+
             (reset! !next-layout nil))
 
           (when-let [el @!scroll-ref]
             (let [positioned   @(:!current-positioned scroll-state)
                   cnt          (count positioned)
                   initialized? @(:!initialized? scroll-state)]
-
               (if (and (pos? cnt) (not initialized?))
                 (let [jump-target-id (:jump-target-id props)
                       target-item    (if jump-target-id
@@ -193,7 +224,11 @@
                   (reset! (:!initialized? scroll-state) true)
                   (reset! (:!at-bottom? scroll-state) (not jump-target-id)))
 
-                (scroll/apply-scroll-anchoring el scroll-state snapshot))))))
+                (scroll/apply-scroll-anchoring el scroll-state snapshot))
+
+
+
+))))
 
       :component-will-unmount
       (fn [this]
@@ -218,6 +253,7 @@
                  scroll-container-class "virtual-list-scroll-container"}}]
 
         @!chunk-tick
+        @!measured
 
         (let [current-count  (count items)
               last-count     @!last-item-count
@@ -347,7 +383,8 @@
                                      #js {"visibleWindow" visible-window
                                           "itemsMap" items-map
                                           "totalHeight" total-height
-                                          "renderItem" render-item}))
+                                          "renderItem" render-item
+                                          "itemResizeObs" item-resize-obs}))
 
               (when (and focus-mode? loading-newer?)
                 [:div {:style {:position "absolute" :bottom "10px" :left 0 :right 0 :z-index 10 :display "flex" :justify-content "center" :pointer-events "none"}}
