@@ -3,29 +3,40 @@
             [reagent.core :as r]))
 
 (defn create-item-observer [!latest-items !measured]
-  (let [obs (js/ResizeObserver.
+  (let [!pending-updates (atom {})
+        !flush-timer     (atom nil)
+        flush-updates!   (fn []
+                           (let [updates @!pending-updates]
+                             (when (seq updates)
+                               (reset! !pending-updates {})
+                               (swap! !measured merge updates)
+                               (r/flush))))
+        obs (js/ResizeObserver.
              (fn [entries]
-               (let [latest-items    @!latest-items
-                     measured-cache  @!measured
+               (let [measured-cache @!measured
                      updates (reduce
                               (fn [acc entry]
                                 (let [el    (.-target entry)
-                                      id    (.getAttribute el "data-item-id")
+                                      id    (or (.getAttribute el "data-item-id")
+                                                (.getAttribute el "data-event-id"))
                                       dom-h (.-offsetHeight el)]
                                   (if (and id (pos? dom-h))
-                                    (let [item             (or (get latest-items id) {:id id})
-                                          current-measured (get measured-cache id)
-                                          used-h           (or current-measured (:height item))
-                                          diff             (if used-h (js/Math.abs (- dom-h used-h)) 1000)
+                                    (let [current-measured (get measured-cache id)
+                                          raw-layout-h     (.getAttribute el "data-layout-height")
+                                          layout-h         (if raw-layout-h (js/parseFloat raw-layout-h) 0)
+                                          used-h           (or current-measured layout-h)
+                                          diff             (js/Math.abs (- dom-h used-h))
                                           dom-h-round      (js/Math.round dom-h)]
-                                      (if (and used-h (> diff 4) (not= current-measured dom-h-round))
+                                      (if (and (> diff 2) (not= current-measured dom-h-round))
                                         (assoc acc id dom-h-round)
                                         acc))
+
                                     acc)))
                               {} entries)]
                  (when (seq updates)
-                   (swap! !measured merge updates)
-                   (r/flush)))))]
+                   (swap! !pending-updates merge updates)
+                   (when-let [timer @!flush-timer] (js/cancelAnimationFrame timer))
+                   (reset! !flush-timer (js/requestAnimationFrame flush-updates!))))))]
     {:observer obs :channel nil}))
 
 (defn create-theme-observer [!theme-metrics extract-metrics-fn]
